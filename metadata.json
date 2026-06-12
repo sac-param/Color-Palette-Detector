@@ -1,0 +1,6 @@
+{
+  "name": "Color Palette Detector",
+  "description": "Upload any image to find its dominant color palette with highly accurate HEX and RGB color codes. Explore generated matching color schemes (complementary, analogous, triadic, monochromatic) and expert design feedback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
