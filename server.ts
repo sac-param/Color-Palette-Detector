@@ -35,101 +35,58 @@ function getGeminiClient(): GoogleGenAI {
   return aiInstance;
 }
 
-// 1. Dominant Colors response schema
-const colorDetectionSchema = {
+// 1. Direct Visual Compare response schema
+const diceComparisonSchema = {
   type: Type.OBJECT,
   properties: {
-    dominantColors: {
+    matches: {
       type: Type.ARRAY,
-      description: "List of the dominant colors detected in the image.",
+      description: "List of comparison results, one for each input rack dice slot.",
       items: {
         type: Type.OBJECT,
         properties: {
-          hex: {
-            type: Type.STRING,
-            description: "The exact hexadecimal code of the color, e.g. '#2A9D8F'. Should include the '#' prefix.",
-          },
-          rgb: {
-            type: Type.OBJECT,
-            description: "The RGB values of the color.",
-            properties: {
-              r: { type: Type.INTEGER, description: "Red channel value (0 to 255)" },
-              g: { type: Type.INTEGER, description: "Green channel value (0 to 255)" },
-              b: { type: Type.INTEGER, description: "Blue channel value (0 to 255)" },
-            },
-            required: ["r", "g", "b"],
-          },
-          name: {
-            type: Type.STRING,
-            description: "A human-friendly, specific name for this color, e.g. 'Emerald Green', 'Electric Blue', 'Mint Green'.",
-          },
-          percentage: {
+          dieId: {
             type: Type.INTEGER,
-            description: "Approximate percentage (1 to 100) of the image's overall color footprint occupied by this color.",
+            description: "The ID number of the rack dice slot (1 to 15) that was compared.",
           },
-          description: {
+          exists: {
+            type: Type.BOOLEAN,
+            description: "True if a die/block matching this exact appearance, colors, texture, or pattern exists in the main puzzle image. Otherwise false.",
+          },
+          confidence: {
+            type: Type.INTEGER,
+            description: "Confidence percentage (0 to 100) of this visual matching.",
+          },
+          reason: {
             type: Type.STRING,
-            description: "Brief description of where/what this color is in the image context.",
+            description: "Brief human explanation of where the matched die is located on the board or why it is missing.",
           },
-        },
-        required: ["hex", "rgb", "name", "percentage", "description"],
-      },
-    },
-    colorSchemes: {
-      type: Type.ARRAY,
-      description: "Generated aesthetic color palettes/schemes centered around these dominant colors.",
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          name: {
-            type: Type.STRING,
-            description: "The style or type of the palette, e.g., 'Complementary Offset', 'Vibrant Monochromatic', 'Soothing Analogous', 'Symmetrical Triadic'.",
-          },
-          colors: {
+          box2d: {
             type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                hex: { type: Type.STRING, description: "Color Hex code, e.g. '#264653'" },
-                rgb: {
-                  type: Type.OBJECT,
-                  properties: {
-                    r: { type: Type.INTEGER },
-                    g: { type: Type.INTEGER },
-                    b: { type: Type.INTEGER },
-                  },
-                  required: ["r", "g", "b"],
-                },
-                name: { type: Type.STRING, description: "Friendly name of the palette color, e.g. 'Charcoal Dark'" },
-              },
-              required: ["hex", "rgb", "name"],
-            },
+            description: "An array of 4 integers [ymin, xmin, ymax, xmax] from 0 to 100 representing percentages of the bounding box where the matching die/block is found in the MAIN TARGET PUZZLE IMAGE. For example, [20, 30, 35, 45]. If exists is false, return [0, 0, 0, 0].",
+            items: { type: Type.INTEGER },
           },
         },
-        required: ["name", "colors"],
+        required: ["dieId", "exists", "confidence", "reason", "box2d"],
       },
     },
     moodDescription: {
       type: Type.STRING,
-      description: "A professional design commentary describing the mood, tone, and harmony of the detected image elements.",
-    },
-    themeSuggestions: {
-      type: Type.STRING,
-      description: "Concrete design layout, product design, home decor, or website theme ideas that fit this color palette perfectly.",
+      description: "Overall summary of the verification analysis of the physical dice layout.",
     },
   },
-  required: ["dominantColors", "colorSchemes", "moodDescription", "themeSuggestions"],
+  required: ["matches", "moodDescription"],
 };
 
 // 2. HTTP API endpoints
 app.post("/api/detect-colors", async (req, res) => {
   try {
-    const { image } = req.body;
+    const { image, rackDice } = req.body;
     if (!image) {
       return res.status(400).json({ error: "Missing image field in request body." });
     }
 
-    // Extract mimeType and base64 string
+    // Extract mimeType and base64 string for the puzzle image
     const match = image.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/);
     let mimeType = "image/png";
     let base64Data = image;
@@ -141,37 +98,74 @@ app.post("/api/detect-colors", async (req, res) => {
 
     const ai = getGeminiClient();
 
-    const imagePart = {
+    const parts: any[] = [];
+    parts.push({ text: "MAIN TARGET PUZZLE IMAGE:\nBelow is the primary puzzle picture showing the arrangement of blue and green colored groups/dices." });
+    parts.push({
       inlineData: {
         mimeType: mimeType,
         data: base64Data,
       },
-    };
+    });
 
-    const textPart = {
-      text: "Analyze the uploaded image. First, identify the major visual elements, tiles, or color clusters in the image. Detect their dominant colors with extreme accuracy (find the hexadecimal codes and RGB codes of the actual items or blocks in the image, such as the colorful squares/shapes on the table). Form a complete color palette containing these core dominant colors, their approximate percentage footprint, names, and localized descriptions. Then generate classic professional color schemes complementing this palette (Complementary, Monochromatic, Analogous, Triadic) and explain the mood and design suggestions.",
-    };
+    const parsedDice = Array.isArray(rackDice) ? rackDice : [];
+
+    if (parsedDice.length === 0) {
+      return res.json({
+        matches: [],
+        moodDescription: "No reference specimens are registered or uploaded in your 15 Dice Rack. Upload some close-up photos above to trace them inside the puzzle board.",
+      });
+    }
+
+    // Add each reference die image
+    parsedDice.forEach((die: any) => {
+      const dieMatch = die.imageUrl?.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/);
+      let dieMime = "image/png";
+      let dieBase64 = die.imageUrl;
+      if (dieMatch) {
+        dieMime = dieMatch[1];
+        dieBase64 = dieMatch[2];
+      }
+
+      parts.push({ text: `\nREFERENCE SINGLE DIE PHOTO (SLOT #${die.id}):` });
+      parts.push({
+        inlineData: {
+          mimeType: dieMime,
+          data: dieBase64,
+        }
+      });
+    });
+
+    parts.push({
+      text: `Task Instructions:
+1. Examine the MAIN TARGET PUZZLE IMAGE.
+2. For each of the uploaded REFERENCE SINGLE DIE PHOTOS (each identified by their Slot #), look for a counterpart in the MAIN TARGET PUZZLE IMAGE.
+3. Compare the detailed appearance, exact color shade (e.g. lime, clover, mint greens or sky, cobalt, teal blues), and surface attributes.
+4. Set "exists" to true if the die is present in the main puzzle image. Write a friendly, helpful "reason" detailing its match stability and approximate location (or lack thereof).
+5. If the die exists in the puzzle image, estimate its bounding box coordinates (ymin, xmin, ymax, xmax) on the MAIN TARGET PUZZLE IMAGE. These coordinates must be integers scaled from 0 to 100 representing percentage offsets (e.g., [15, 45, 25, 55] means Top: 15%, Left: 45%, Bottom: 25%, Right: 55%). If exists is false, set box2d to [0, 0, 0, 0].
+6. Set confidence from 0 to 100 based on how clear your observation is.
+7. Return the final structured output conforming strictly to the requested schema.`
+    });
 
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",
-      contents: { parts: [imagePart, textPart] },
+      contents: { parts },
       config: {
         responseMimeType: "application/json",
-        responseSchema: colorDetectionSchema,
+        responseSchema: diceComparisonSchema,
       },
     });
 
     const responseText = response.text;
     if (!responseText) {
-      throw new Error("Empty response received from color detection model.");
+      throw new Error("Empty response received from pattern matching model.");
     }
 
     const result = JSON.parse(responseText.trim());
     return res.json(result);
   } catch (error: any) {
-    console.error("Color detection endpoint error:", error);
+    console.error("Pattern comparison endpoint error:", error);
     return res.status(500).json({
-      error: error.message || "Failed to process color detection.",
+      error: error.message || "Failed to process visual content pattern matching.",
     });
   }
 });

@@ -1,616 +1,777 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Palette,
   Upload,
   Image as ImageIcon,
   Sparkles,
   Check,
-  Copy,
   AlertTriangle,
-  Lightbulb,
-  Brush,
-  History,
   RotateCcw,
+  Camera,
+  Trash2,
+  Sliders,
+  CheckCircle,
+  HelpCircle,
+  ArrowRight,
+  Maximize2
 } from "lucide-react";
-import ImageColorPicker from "./components/ImageColorPicker";
-import ColorSwatches from "./components/ColorSwatches";
-import ColorSchemesList from "./components/ColorSchemesList";
-import { ColorDetectionResult } from "./types";
+import { DetectedBlock } from "./types";
 
-const SAMPLE_PRESETS = [
-  {
-    name: "Toy Blocks Layer",
-    description: "Vibrant color squares on white canvas",
-    url: "https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?w=800&auto=format&fit=crop&q=80",
-  },
-  {
-    name: "Lush Tropical Greens",
-    description: "Forest foliage, teals, and light moss",
-    url: "https://images.unsplash.com/photo-1448375240586-882707db888b?w=800&auto=format&fit=crop&q=80",
-  },
-  {
-    name: "Golden Sunset Coast",
-    description: "Deep oceanic blue and solar golden sands",
-    url: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&auto=format&fit=crop&q=80",
-  },
-];
+interface CustomDie {
+  id: number;
+  imageUrl: string;
+  name: string;
+  uploadedAt: string;
+}
 
-const LOADING_STEPS = [
-  "Reading image pixel formats...",
-  "Running spatial quantization algorithms...",
-  "Triggering multimodal analysis via Gemini-3.5-Flash...",
-  "Awaiting dominant color boundaries...",
-  "Extracting hex codes & RGB components...",
-  "Calculating pigment percentage distribution...",
-  "Formulating matching complementary palettes...",
-  "Drafting mood atmosphere report...",
-  "Finalizing color scheme variables...",
-];
+const CONSTANT_DICE_IDS = Array.from({ length: 15 }, (_, i) => i + 1);
 
 export default function App() {
-  const [imageSrc, setImageSrc] = useState<string>(SAMPLE_PRESETS[0].url);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [loadingStepIdx, setLoadingStepIdx] = useState(0);
-  const [result, setResult] = useState<ColorDetectionResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<Array<{ thumbnail: string; result: ColorDetectionResult }>>([]);
-
-  // Loop through funny loading steps during execution
-  React.useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (loading) {
-      setLoadingStepIdx(0);
-      interval = setInterval(() => {
-        setLoadingStepIdx((prev) => (prev + 1) % LOADING_STEPS.length);
-      }, 2500);
+  // 15 slots in the Constant Dice Rack
+  const [rack, setRack] = useState<Record<number, CustomDie>>(() => {
+    const saved = localStorage.getItem("rack_dice_custom");
+    if (saved) {
+      try { return JSON.parse(saved) as Record<number, CustomDie>; } catch (e) { /* ignore */ }
     }
-    return () => clearInterval(interval);
-  }, [loading]);
+    return {} as Record<number, CustomDie>;
+  });
 
-  // Handle Drag Events
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
+  // Target slot to upload customized die image for
+  const [activeSlotId, setActiveSlotId] = useState<number | null>(null);
+
+  // Main board/puzzle image
+  const [puzzleImage, setPuzzleImage] = useState<string | null>(null);
+  const [isDragOverPuzzle, setIsDragOverPuzzle] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Scanned visual compared results from endpoint
+  const [comparisonMatches, setComparisonMatches] = useState<Array<{
+    dieId: number;
+    exists: boolean;
+    confidence: number;
+    reason: string;
+  }> | null>(null);
+  const [analysisText, setAnalysisText] = useState<string>("");
+
+  // Save rack whenever it changes
+  useEffect(() => {
+    localStorage.setItem("rack_dice_custom", JSON.stringify(rack));
+  }, [rack]);
+
+  // Handle customizable single die photo uploads
+  const handleDiePhotoUpload = async (dieId: number, base64: string) => {
+    setRack((prev) => ({
+      ...prev,
+      [dieId]: {
+        id: dieId,
+        imageUrl: base64,
+        name: `Specimen #${dieId}`,
+        uploadedAt: new Date().toLocaleTimeString(),
+      },
+    }));
+    setActiveSlotId(null);
   };
 
-  const handleDragLeave = () => {
-    setIsDragOver(false);
+  // Remove uploaded die photograph
+  const removeDiePhoto = (dieId: number) => {
+    setRack((prev) => {
+      const updated = { ...prev };
+      delete updated[dieId];
+      return updated;
+    });
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  // Puzzle upload drop triggers
+  const handlePuzzleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragOver(false);
+    setIsDragOverPuzzle(true);
+  };
+
+  const handlePuzzleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOverPuzzle(false);
     setError(null);
-
     const file = e.dataTransfer.files[0];
     if (file && file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = () => {
         if (typeof reader.result === "string") {
-          setImageSrc(reader.result);
-          setResult(null); // Clear previous results to prompt new run
+          setPuzzleImage(reader.result);
+          setComparisonMatches(null);
         }
       };
-      reader.onerror = () => {
-        setError("Failed to read dropped image file.");
-      };
       reader.readAsDataURL(file);
-    } else {
-      setError("Please drop a valid image file (PNG, JPG, WebP, etc.).");
     }
   };
 
-  // Handle file picker selection
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePuzzleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
     const file = e.target.files?.[0];
     if (file && file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = () => {
         if (typeof reader.result === "string") {
-          setImageSrc(reader.result);
-          setResult(null); // Clear previous results
+          setPuzzleImage(reader.result);
+          setComparisonMatches(null);
         }
-      };
-      reader.onerror = () => {
-        setError("Failed to read selected file.");
       };
       reader.readAsDataURL(file);
     }
   };
 
-  // Select Preset Trigger
-  const selectPreset = (url: string) => {
-    setImageSrc(url);
-    setResult(null);
+  // Run full-stack Gemini analysis to find blocks
+  const analyzePuzzle = async () => {
+    if (!puzzleImage) return;
+    setIsAnalyzing(true);
     setError(null);
-  };
-
-  // Run backend logic
-  const analyzePalette = async () => {
-    if (!imageSrc) {
-      setError("Please select or upload an image first.");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
+    setComparisonMatches(null);
 
     try {
-      const response = await fetch("/api/detect-colors", {
+      const rackDicePayload = (Object.values(rack) as CustomDie[]).map(die => ({
+        id: die.id,
+        imageUrl: die.imageUrl
+      }));
+
+      const resp = await fetch("/api/detect-colors", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ image: imageSrc }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: puzzleImage,
+          rackDice: rackDicePayload
+        }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.error || `HTTP error! Status: ${response.status}. Failed to communicate with server.`
-        );
+      if (!resp.ok) {
+        throw new Error(`Execution error (Status ${resp.status})`);
       }
 
-      const data: ColorDetectionResult = await response.json();
-      setResult(data);
-
-      // Add to session history
-      setHistory((prev) => {
-        // Prevent duplicate entries of the same general aesthetic
-        if (prev.some((h) => h.result.dominantColors[0]?.hex === data.dominantColors[0]?.hex)) return prev;
-        return [{ thumbnail: imageSrc, result: data }, ...prev].slice(0, 5);
-      });
+      const parsed = await resp.json();
+      if (parsed.matches) {
+        setComparisonMatches(parsed.matches);
+      } else {
+        setComparisonMatches([]);
+      }
+      setAnalysisText(parsed.moodDescription || "No comments returned from scanner.");
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "An unexpected error occurred during color analysis.");
+      setError(err.message || "Failed to process visual content via Gemini.");
     } finally {
-      setLoading(false);
+      setIsAnalyzing(false);
     }
   };
+  const matchedDiceCount = comparisonMatches ? comparisonMatches.filter((m: any) => m.exists).length : 0;
+  const totalRegisteredCount = Object.keys(rack).length;
 
-  // Export current palette as CSS variables
-  const [isCopiedAsCss, setIsCopiedAsCss] = useState(false);
-  const handleExportCSS = () => {
-    if (!result) return;
-    const variables = result.dominantColors
-      .map((color, index) => {
-        const cleanName = color.name.toLowerCase().replace(/\s+/g, "-");
-        return `  --clr-${cleanName}: ${color.hex}; /* ${color.percentage}% share */`;
-      })
-      .join("\n");
-
-    const cssString = `:root {\n${variables}\n}`;
-    navigator.clipboard.writeText(cssString);
-    setIsCopiedAsCss(true);
-    setTimeout(() => setIsCopiedAsCss(false), 2000);
-  };
-
+  // Render a clean structural layout
   return (
-    <div className="min-h-screen bg-[#F9FAFB] text-zinc-900 flex flex-col font-sans" id="app-viewport">
-      {/* Decorative Top Accent Bar */}
-      <div className="h-1 bg-black" />
+    <div className="min-h-screen bg-[#FAF9F6] text-zinc-900 flex flex-col font-sans relative antialiasedSelection" id="app-root">
+      {/* Visual Top Decorative Trim */}
+      <div className="h-1.5 bg-gradient-to-r from-emerald-600 via-zinc-900 to-cyan-600" />
 
-      {/* Main navigation header */}
-      <header className="sticky top-0 z-20 border-b border-zinc-200 bg-white">
-        <div className="max-w-7xl mx-auto px-6 lg:px-8 py-4 flex items-center justify-between">
+      {/* Main Nav Header */}
+      <header className="border-b border-zinc-200/80 bg-white/90 backdrop-blur-md sticky top-0 z-30 shadow-xs">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-black rounded flex items-center justify-center shrink-0">
-              <div className="w-4 h-4 border-2 border-white rounded-sm rotate-45"></div>
+            <div className="w-10 h-10 bg-black rounded-xl flex items-center justify-center text-white shrink-0 shadow-md">
+              <Sparkles className="w-5 h-5 text-emerald-400 animate-pulse" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-zinc-950 tracking-wider font-mono flex items-center gap-2">
-                CHROMA_API_v1
+              <h1 className="text-sm font-black font-display text-zinc-900 tracking-wider uppercase flex items-center gap-2">
+                 BLUE_GREEN_EXHIBIT_SCANNER
               </h1>
-              <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest leading-none">
-                Dominant Color Intelligence
+              <p className="text-[10px] text-zinc-500 font-mono font-bold leading-none uppercase tracking-widest mt-0.5">
+                Physical Dice Match verify.conops
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded">
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-              <span>SYSTEMS_LIVE</span>
+          <div className="flex items-center gap-3">
+            <div className="text-[10px] items-center gap-1.5 font-bold font-mono tracking-wider uppercase text-emerald-700 bg-emerald-50 border border-emerald-200/55 px-3 py-1.5 rounded-lg flex shadow-xs">
+              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
+              <span>STABILITY_VERIFIED</span>
             </div>
-            <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest hidden md:inline">
-              v1.4.0
-            </span>
+            <button
+              onClick={() => {
+                if (window.confirm("Resave layout registry and wipe all uploaded slots?")) {
+                  setRack({});
+                  setPuzzleImage(null);
+                  setComparisonMatches(null);
+                  localStorage.removeItem("rack_dice_custom");
+                }
+              }}
+              title="Reset configuration"
+              className="p-2 text-zinc-400 hover:text-red-650 hover:bg-zinc-100 rounded-lg transition-all border border-transparent hover:border-zinc-200 cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Core Body Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 lg:px-8 py-8">
+      {/* Core Workspace Grid */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 space-y-10">
+        
+        {/* UPPER RACK SECTION: Unplaced 15 Constant Dice Rack */}
+        <section className="bg-white rounded-3xl border-2 border-zinc-200/90 p-6 md:p-8 shadow-sm space-y-6" id="dice-rack-section">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-150 pb-5">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full" />
+                <h2 className="text-sm font-black font-mono tracking-widest text-zinc-800 uppercase">
+                  Unplaced 15 Constant Dice Rack
+                </h2>
+              </div>
+              <p className="text-xs text-zinc-500 mt-1 max-w-2xl">
+                Define your physical dice specifications. Click any empty slot to upload a close-up photo of a physical die, then upload your main board puzzle snapshot below to find if each uploaded die exists in the puzzle image.
+              </p>
+            </div>
+            <div className="text-xs font-mono font-bold text-zinc-500 bg-zinc-100 border border-zinc-200/80 px-3 py-1.5 rounded-lg shrink-0 self-start md:self-auto">
+              REGISTERED SPECIES: <span className="text-zinc-900">{totalRegisteredCount}</span> / 15
+            </div>
+          </div>
+
+          {/* 15 grid slots layout */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-15 gap-3.5 pt-2">
+            {CONSTANT_DICE_IDS.map((idx) => {
+              const item = rack[idx];
+              return (
+                <div
+                  key={`slot-${idx}`}
+                  className="aspect-square relative flex flex-col group rounded-2xl overflow-hidden shadow-xs"
+                >
+                  {item ? (
+                    // Populated state - Clickable to update die photo
+                    <div 
+                      onClick={() => setActiveSlotId(idx)}
+                      className="w-full h-full relative group cursor-pointer hover:scale-[1.01] transition-transform"
+                    >
+                      <img
+                        src={item.imageUrl}
+                        alt={`Die #${idx}`}
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-black/80 backdrop-blur-xs p-1.5 flex flex-col items-center justify-center">
+                        <span className="text-[9px] font-mono font-bold tracking-wider text-white">Specimen #{idx}</span>
+                      </div>
+                      <div className="absolute top-1.5 right-1.5 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeDiePhoto(idx);
+                          }}
+                          title="Wipe die custom metrics"
+                          className="p-1 text-white bg-red-650 hover:bg-red-770 rounded shadow-md cursor-pointer transition-transform duration-100 hover:scale-105"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    // Empty clickable state
+                    <button
+                      onClick={() => setActiveSlotId(idx)}
+                      className="w-full h-full border-2 border-dashed border-zinc-200 hover:border-zinc-400 bg-zinc-50/50 hover:bg-zinc-50 flex flex-col items-center justify-center p-2 text-center transition-all duration-150 hover:scale-[1.02] cursor-pointer"
+                    >
+                      <span className="w-6 h-6 rounded-full bg-zinc-205 flex items-center justify-center text-zinc-500 text-[10px] font-black group-hover:bg-zinc-800 group-hover:text-white transition-colors duration-155">
+                        {idx}
+                      </span>
+                      <Camera className="w-4 h-4 text-zinc-400 mt-2 group-hover:text-zinc-600 transition-colors" />
+                      <span className="text-[8px] font-black font-mono tracking-tighter text-zinc-450 uppercase mt-1">
+                        Upload
+                      </span>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* WORKSPACE COMBINED GRID BLOCK */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           
-          {/* LEFT COLUMN: Input Control Platform (5 Cols) */}
-          <section className="lg:col-span-12 xl:col-span-5 space-y-6" id="left-platform">
-            {/* Image Selection Block */}
-            <div className="bg-white rounded-2xl border-2 border-zinc-200 p-6 shadow-sm space-y-5">
-              <div>
-                <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Select Image Target</h3>
-                <p className="text-xs text-zinc-500 mt-1">
-                  Upload layout tiles, natural scenery, patterns, or graphic designs.
-                </p>
-              </div>
+          {/* LEFT: BOARD PUZZLE IMAGE UPLOADER */}
+          <section className="lg:col-span-6 bg-white rounded-3xl border-2 border-zinc-200/90 p-6 md:p-8 shadow-sm space-y-6">
+            <div>
+              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-widest font-mono">
+                Capture Frame Integration
+              </h3>
+              <h2 className="text-[17px] font-bold text-zinc-900 mt-1 font-display leading-tight">
+                Upload Full Puzzle Photo
+              </h2>
+              <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
+                Provide a photo showing the arrangement of colored blocks (green/blue groups). We will locate the blocks and match them back to your rack.
+              </p>
+            </div>
 
-              {/* Drag and Drop Region */}
-              <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`relative rounded-xl border-2 border-dashed transition-all duration-200 ${
-                  isDragOver
-                    ? "border-black bg-zinc-50 scale-[1.01]"
-                    : "border-zinc-200 hover:border-zinc-300 bg-zinc-50/50"
-                }`}
-              >
-                <input
-                  type="file"
-                  id="image-file-upload"
-                  className="hidden"
-                  accept="image/*"
-                  onChange={handleFileChange}
-                />
-                
-                {/* Overlay Picker Trigger */}
-                <label
-                  htmlFor="image-file-upload"
-                  className="flex flex-col items-center justify-center p-6 text-center cursor-pointer space-y-2.5"
-                >
-                  <div className="p-3 bg-white rounded border border-zinc-200 shadow-xs text-zinc-400 group-hover:text-black transition-colors">
-                    <Upload className="w-5 h-5 mx-auto text-zinc-800" />
+            {/* Drag & Drop space */}
+            <div
+              onDragOver={handlePuzzleDragOver}
+              onDragLeave={() => setIsDragOverPuzzle(false)}
+              onDrop={handlePuzzleDrop}
+              className={`relative border-2 border-dashed rounded-2xl p-6 text-center transition-all duration-200 flex flex-col items-center justify-center min-h-[250px] ${
+                isDragOverPuzzle
+                  ? "border-emerald-600 bg-emerald-50/30 scale-[1.01]"
+                  : "border-zinc-200 hover:border-zinc-300 bg-zinc-50/40"
+              }`}
+            >
+              {puzzleImage ? (
+                <div className="w-full space-y-4">
+                  <div className="relative aspect-video rounded-xl overflow-hidden border border-zinc-200 bg-black/5 mx-auto max-h-[220px]">
+                    <img
+                      src={puzzleImage}
+                      alt="Uploaded target puzzle"
+                      className="w-full h-full object-contain"
+                      referrerPolicy="no-referrer"
+                    />
+                    <button
+                      onClick={() => {
+                        setPuzzleImage(null);
+                        setComparisonMatches(null);
+                      }}
+                      className="absolute top-2 right-2 bg-black/70 hover:bg-black/90 p-1.5 rounded-lg text-white shadow-md cursor-pointer text-xs"
+                    >
+                      Change Photo
+                    </button>
+                  </div>
+                  <p className="text-[10px] font-mono font-bold text-zinc-400">
+                    File registered successfully. Ready for computer vision matching.
+                  </p>
+                </div>
+              ) : (
+                <label className="flex flex-col items-center justify-center cursor-pointer space-y-3.5 py-8 w-full h-full">
+                  <div className="p-4 bg-white border border-zinc-200 rounded-2xl shadow-xs text-zinc-400">
+                    <Upload className="w-6 h-6 text-zinc-700" />
                   </div>
                   <div>
-                    <span className="text-xs font-bold text-zinc-900 uppercase tracking-wider block hover:underline">
-                      Click to choose image file
+                    <span className="text-xs font-bold text-zinc-900 uppercase tracking-wider block underline hover:text-black">
+                      Select layout snapshot file
                     </span>
-                    <span className="text-[10px] text-zinc-400 uppercase tracking-widest block mt-1">
-                      or drag & drop here (WBP, PNG, JPG, JPEG)
+                    <span className="text-[9px] text-zinc-400 font-mono font-bold uppercase block mt-1.5">
+                      or drag and drop puzzle photo here
                     </span>
                   </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handlePuzzleFileChange}
+                    className="hidden"
+                  />
                 </label>
-              </div>
+              )}
+            </div>
 
-              {/* Preset Carousel */}
-              <div className="space-y-2">
-                <span className="text-[10px] font-bold text-zinc-405 uppercase tracking-widest block">
-                  Quick Testing Presets
-                </span>
-                <div className="grid grid-cols-3 gap-2">
-                  {SAMPLE_PRESETS.map((preset, idx) => {
-                    const isSelected = imageSrc === preset.url;
+            {/* Scan trigger button */}
+            <button
+              onClick={analyzePuzzle}
+              disabled={isAnalyzing || !puzzleImage}
+              className="w-full bg-black hover:bg-zinc-800 disabled:bg-zinc-200 disabled:text-zinc-400 text-white font-bold rounded-xl py-4 text-xs tracking-widest uppercase transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm disabled:cursor-not-allowed"
+            >
+              {isAnalyzing ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Aligning Multi-group layout frames...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
+                  <span>Process Puzzle & Search Matching Dice</span>
+                </>
+              )}
+            </button>
+
+            {/* Visual Bounding Box Placement Map Overlay */}
+            {!isAnalyzing && comparisonMatches !== null && puzzleImage && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="pt-6 border-t border-zinc-150 space-y-4"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                    <h4 className="text-xs font-bold text-zinc-800 uppercase tracking-widest font-mono">
+                      Verified Layout Map Overlays
+                    </h4>
+                  </div>
+                  <span className="text-[9px] font-mono font-bold bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-md border border-emerald-200">
+                    {matchedDiceCount} DETECTED SPECIMENS
+                  </span>
+                </div>
+
+                <div className="relative w-full overflow-hidden rounded-2xl border-2 border-zinc-200/90 shadow bg-stone-50 select-none">
+                  <img
+                    src={puzzleImage}
+                    alt="Verified puzzle map layout"
+                    className="w-full h-auto block object-contain"
+                    referrerPolicy="no-referrer"
+                  />
+                  
+                  {/* Bounding box item overlay list */}
+                  {comparisonMatches.map((match: any) => {
+                    if (!match.exists || !match.box2d || !Array.isArray(match.box2d) || match.box2d.length < 4) return null;
+                    if (match.box2d.every((val: number) => val === 0)) return null;
+
+                    // extract percent coordinates: [ymin, xmin, ymax, xmax]
+                    const [ymin, xmin, ymax, xmax] = match.box2d;
+                    const top = ymin;
+                    const left = xmin;
+                    const width = xmax - xmin;
+                    const height = ymax - ymin;
+
                     return (
-                      <button
-                        key={`preset-${idx}`}
-                        onClick={() => selectPreset(preset.url)}
-                        className={`group relative text-left rounded overflow-hidden border p-1 transition-all text-xs flex flex-col justify-end min-h-[56px] focus:outline-none ${
-                          isSelected
-                            ? "border-zinc-900 ring-2 ring-zinc-200 bg-zinc-100"
-                            : "border-zinc-200 hover:border-zinc-300"
-                        }`}
+                      <div
+                        key={`overlay-die-${match.dieId}`}
+                        style={{
+                          position: "absolute",
+                          top: `${top}%`,
+                          left: `${left}%`,
+                          width: `${width}%`,
+                          height: `${height}%`,
+                        }}
+                        className="group border-2 border-emerald-500 hover:border-cyan-500 bg-emerald-500/15 hover:bg-cyan-500/20 transition-all duration-150 rounded"
+                        title={`Slot Specimen #${match.dieId}: Confidence ${match.confidence}%`}
                       >
-                        <img
-                          src={preset.url}
-                          alt={preset.name}
-                          className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-zinc-900/90 via-zinc-900/30 to-transparent" />
-                        <span className="relative z-10 text-[9px] font-bold text-white uppercase tracking-wider leading-tight line-clamp-1">
-                          {preset.name}
-                        </span>
-                      </button>
+                        <div className="absolute top-1 left-1 bg-black text-white font-mono font-black text-[9px] px-1.5 py-0.5 rounded shadow-lg border border-emerald-400 select-none leading-none z-10 whitespace-nowrap opacity-90 group-hover:opacity-100 group-hover:border-cyan-400 transition-all">
+                          Specimen #{match.dieId}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
-              </div>
-
-              {/* Command Action Button */}
-              <button
-                onClick={analyzePalette}
-                disabled={loading || !imageSrc}
-                className="w-full bg-black hover:bg-zinc-800 text-white font-bold rounded-xl py-3.5 px-4 text-xs tracking-widest uppercase transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-              >
-                <Sparkles className="w-4 h-4 text-zinc-350 animate-pulse" />
-                <span>{loading ? "Analyzing Color Footprints..." : "Extract Dominant Color Palette"}</span>
-              </button>
-            </div>
-
-            {/* Live Interactive Pixel Inspector Box */}
-            {imageSrc && (
-              <div className="bg-white rounded-2xl border-2 border-zinc-200 p-6 shadow-sm space-y-4">
-                <div>
-                  <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Pixel Color Loupe</h3>
-                  <p className="text-xs text-zinc-500 mt-1">
-                    Point your cursor anywhere on the picture to isolate and pin specific pixel-perfect Hex values.
-                  </p>
-                </div>
-
-                <ImageColorPicker imageSrc={imageSrc} />
-              </div>
+                <p className="text-[10px] text-zinc-400 font-mono text-center leading-relaxed">
+                  * Bounding boxes approximate the coordinates detected by Gemini pattern search matching.
+                </p>
+              </motion.div>
             )}
           </section>
 
-          {/* RIGHT COLUMN: Output Dashboard (7 Cols) */}
-          <section className="lg:col-span-12 xl:col-span-7" id="right-dashboard">
+          {/* RIGHT: COMPARISON MATRICES & MATCH OVERALL RESULTS */}
+          <section className="lg:col-span-6 space-y-6">
             <AnimatePresence mode="wait">
-              {/* If Loading state */}
-              {loading && (
+              {error && (
                 <motion.div
-                  key="loading-state"
-                  initial={{ opacity: 0, scale: 0.98 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.98 }}
-                  transition={{ duration: 0.2 }}
-                  className="bg-white rounded-2xl border-2 border-zinc-200 p-8 shadow-sm flex flex-col items-center justify-center min-h-[480px] text-center space-y-6"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="bg-red-50 border border-red-200 p-5 rounded-3xl space-y-2 text-left"
                 >
-                  <div className="relative flex items-center justify-center">
-                    {/* Ring loader */}
-                    <div className="w-16 h-16 border-4 border-zinc-100 border-t-zinc-900 rounded-full animate-spin" />
-                    <Palette className="w-6 h-6 text-zinc-900 absolute animate-pulse" />
-                  </div>
-
-                  <div className="space-y-2">
-                    <h4 className="text-sm font-bold text-zinc-900 uppercase tracking-wider animate-pulse">Running Color Analysis</h4>
-                    <p className="text-xs text-zinc-400 font-mono tracking-wide max-w-sm mx-auto min-h-[1.5rem]">
-                      {LOADING_STEPS[loadingStepIdx]}
-                    </p>
-                  </div>
-
-                  {/* Modern skeleton simulator */}
-                  <div className="w-full max-w-md space-y-3.5 pt-4">
-                    <div className="h-3 bg-zinc-150 rounded w-2/3 mx-auto animate-pulse" />
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="h-20 bg-zinc-50 border border-zinc-200 rounded animate-pulse" />
-                      <div className="h-20 bg-zinc-50 border border-zinc-200 rounded animate-pulse" />
-                    </div>
-                    <div className="h-24 bg-zinc-50 border border-zinc-200 rounded animate-pulse" />
-                  </div>
-                </motion.div>
-              )}
-
-              {/* If Error state */}
-              {error && !loading && (
-                <motion.div
-                  key="error-state"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="bg-zinc-50 rounded-2xl border-2 border-zinc-350 p-6 shadow-xs space-y-4 text-left"
-                >
-                  <div className="flex gap-3 items-start">
-                    <div className="p-2 bg-zinc-100 rounded text-zinc-900 border border-zinc-300 shrink-0">
-                      <AlertTriangle className="w-5 h-5" />
-                    </div>
-                    <div className="space-y-1.5">
-                      <h4 className="text-xs font-bold text-zinc-900 uppercase tracking-widest">Color Extraction Error</h4>
-                      <p className="text-xs text-zinc-700 leading-relaxed">{error}</p>
-                    </div>
-                  </div>
-
-                  {error.includes("GEMINI_API_KEY") && (
-                    <div className="bg-white rounded p-4 border border-zinc-200 text-xs text-zinc-650 space-y-2 leading-relaxed">
-                      <p className="font-bold flex items-center gap-1.5 text-zinc-800 uppercase tracking-wider">
-                        <Lightbulb className="w-4 h-4 text-zinc-900" /> Key Setup Instructions:
+                  <div className="flex gap-2 text-red-800">
+                    <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider font-mono">
+                        Verification Blocked
+                      </h4>
+                      <p className="text-xs mt-1 leading-relaxed text-red-700">
+                        {error}
                       </p>
-                      <ol className="list-decimal pl-4 space-y-1 font-sans">
-                        <li>Locate the <strong>Settings</strong> button at the top-right of your screen.</li>
-                        <li>Click <strong>Secrets</strong> inside the Settings menu.</li>
-                        <li>Add a secret named <code>GEMINI_API_KEY</code> with your free Gemini API key.</li>
-                        <li>Click save and retry analysis!</li>
-                      </ol>
                     </div>
-                  )}
-
-                  <button
-                    onClick={analyzePalette}
-                    className="text-xs bg-black hover:bg-zinc-800 text-white font-bold py-2.5 px-4 rounded shadow-sm transition-colors cursor-pointer uppercase tracking-wider"
-                  >
-                    Retry Analysis
-                  </button>
+                  </div>
                 </motion.div>
               )}
 
-              {/* Empty state when no analysis is run yet */}
-              {!loading && !result && !error && (
+              {/* Loader placeholder */}
+              {isAnalyzing && (
                 <motion.div
-                  key="empty-state"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  className="bg-white rounded-2xl border-2 border-zinc-200 p-8 shadow-sm flex flex-col items-center justify-center min-h-[440px] text-center space-y-5"
+                  className="bg-white rounded-3xl border-2 border-zinc-200/95 p-8 text-center flex flex-col items-center justify-center min-h-[350px] space-y-4"
                 >
-                  <div className="w-14 h-14 bg-zinc-50 border border-zinc-200 rounded flex items-center justify-center shadow-sm">
-                    <div className="w-6 h-6 border-2 border-zinc-400 rotate-45 animated-pulse"></div>
-                  </div>
-                  <div className="space-y-1.5 max-w-sm">
-                    <h4 className="text-xs font-bold text-zinc-855 uppercase tracking-widest">Awaiting API Execution</h4>
-                    <p className="text-xs text-zinc-500 leading-relaxed">
-                      Trigger the analyzer endpoint below to extract the dominant hex footprints, complementary formulas, and metadata summaries of this image.
+                  <div className="w-12 h-12 border-4 border-zinc-100 border-t-zinc-900 rounded-full animate-spin" />
+                  <div className="space-y-1">
+                    <h3 className="text-xs font-bold text-zinc-900 font-mono tracking-widest uppercase animate-pulse">
+                      Analyzing Physical Geometry
+                    </h3>
+                    <p className="text-xs text-zinc-400 font-sans">
+                      Wait while Gemini performs direct visual search and matches your loaded rack keys to target positions...
                     </p>
                   </div>
-                  <button
-                    onClick={analyzePalette}
-                    className="bg-black hover:bg-zinc-800 text-white font-bold text-xs py-2.5 px-5 rounded shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer mt-2 uppercase tracking-widest"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-zinc-300" />
-                    <span>Scan Preset Target</span>
-                  </button>
                 </motion.div>
               )}
 
-              {/* Color Analysis Results Platform */}
-              {!loading && result && !error && (
+              {/* Results populated */}
+              {!isAnalyzing && comparisonMatches !== null && (
                 <motion.div
-                  key="result-state"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.25, ease: "easeOut" }}
-                  className="space-y-6"
+                  className="space-y-6 animate-fade-in"
+                  id="results-view"
                 >
-                  {/* Results Panel Header Actions */}
-                  <div className="flex flex-wrap items-center justify-between gap-3 bg-zinc-50 p-4 rounded-xl border border-zinc-200 shadow-xs">
-                    <div className="flex items-center gap-2 text-xs font-bold text-zinc-505 uppercase tracking-widest">
-                      <span className="bg-black text-white p-1.5 rounded">
-                        <Palette className="w-3.5 h-3.5" />
-                      </span>
-                      <span>EXTRACTION_COMPLETE</span>
+                  {/* Presence score counter */}
+                  <div className="bg-gradient-to-br from-zinc-900 to-zinc-800 text-white rounded-3xl p-6 shadow-md border border-zinc-950 relative overflow-hidden">
+                    {/* Abstract tech decoration */}
+                    <div className="absolute right-0 bottom-0 opacity-15 text-[120px] font-mono leading-none select-none font-bold transform translate-x-1/4 translate-y-1/4">
+                      {matchedDiceCount}
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleExportCSS}
-                        className="text-xs font-bold text-white bg-black hover:bg-zinc-900 px-4 py-2 rounded transition-all flex items-center gap-2 cursor-pointer shadow-sm tracking-wider uppercase"
-                      >
-                        {isCopiedAsCss ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>Variables Copied!</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>Export CSS Variables</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Dominant Colors Section */}
-                  <div className="bg-white rounded-2xl border-2 border-zinc-200 p-6 shadow-xs">
-                    <ColorSwatches colors={result.dominantColors} />
-                  </div>
-
-                  {/* Secondary Color Schemes tracks */}
-                  <div className="bg-white rounded-2xl border-2 border-zinc-200 p-6 shadow-xs">
-                    <ColorSchemesList schemes={result.colorSchemes} />
-                  </div>
-
-                  {/* Poetic commentary & Branding suggestions - Structured Bento style */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* JSON Response Snippet */}
-                    <div className="bg-zinc-900 rounded-2xl p-6 font-mono text-[10.5px] text-zinc-300 leading-relaxed overflow-hidden border border-zinc-950 shadow-md">
-                      <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-3">
-                        <span className="text-zinc-500 font-bold uppercase tracking-wider">RESPONSE_BODY (application/json)</span>
-                        <span className="text-emerald-400 font-bold">200 OK</span>
+                    <div className="relative z-10 flex flex-col justify-between h-full space-y-4">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono font-bold tracking-widest uppercase text-emerald-400">
+                          SPECIMEN_VERIFICATION_MATCH_SCORE
+                        </span>
+                        <span className="text-[10px] font-bold bg-white/10 px-2.5 py-1 rounded-sm uppercase">
+                          COMPLETE
+                        </span>
                       </div>
-                      <div className="space-y-1 select-all">
-                        <div>{`{`}</div>
-                        <div className="pl-4"><span className="text-zinc-500">"status":</span> <span className="text-emerald-400">"success"</span>,</div>
-                        <div className="pl-4"><span className="text-zinc-500">"elements_count":</span> <span className="text-emerald-400">{result.dominantColors.length}</span>,</div>
-                        <div className="pl-4"><span className="text-zinc-500">"atmosphere":</span> <span className="text-amber-400">"{result.moodDescription.slice(0, 50).replace(/"/g, '')}..."</span>,</div>
-                        <div className="pl-4"><span className="text-zinc-500">"palette": [</span></div>
-                        {result.dominantColors.slice(0, 3).map((col, cIdx) => (
-                          <div key={cIdx} className="pl-8">
-                            {`{ `}<span className="text-zinc-500">"hex":</span> <span className="text-indigo-300">"{col.hex}"</span>, <span className="text-zinc-500">"weight":</span> <span className="text-amber-300">{col.percentage}%</span> {` },`}
-                          </div>
-                        ))}
-                        <div className="pl-4">]</div>
-                        <div>{`}`}</div>
-                      </div>
-                    </div>
 
-                    {/* Theme Suggestions & compute grids */}
-                    <div className="space-y-4">
-                      <div className="bg-white border-2 border-zinc-200 rounded-2xl p-5 shadow-xs space-y-3">
-                        <h4 className="text-xs font-bold text-zinc-450 uppercase tracking-widest flex items-center gap-1.5">
-                          <Lightbulb className="w-4 h-4 text-zinc-500" />
-                          Theme Suggestions
-                        </h4>
-                        <p className="text-xs text-zinc-600 leading-relaxed">
-                          {result.themeSuggestions}
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-5xl font-black font-display text-white">
+                          {matchedDiceCount} <span className="text-zinc-500 text-xl font-medium">of</span> {totalRegisteredCount}
                         </p>
                       </div>
-                      
-                      <div className="flex gap-4">
-                        <div className="flex-1 bg-white border border-zinc-200 rounded-xl p-4">
-                            <p className="text-[10px] font-bold text-zinc-400 mb-1">ANALYSIS INSTABILITY</p>
-                            <p className="text-base font-bold text-zinc-900">0% COLLISION</p>
-                        </div>
-                        <div className="flex-1 bg-white border border-zinc-200 rounded-xl p-4">
-                            <p className="text-[10px] font-bold text-zinc-400 mb-1">MODEL COGNITION</p>
-                            <p className="text-base font-bold text-zinc-900">GEMINI FLASH</p>
-                        </div>
-                      </div>
+
+                      <p className="text-xs text-zinc-350 leading-relaxed max-w-md">
+                        {totalRegisteredCount === 0 ? (
+                          <span className="text-yellow-400 font-bold">
+                            ⚠️ Zero constant rack specimens are registered. Upload single die photos above to run direct pattern-matching search checks!
+                          </span>
+                        ) : matchedDiceCount === 0 ? (
+                          "0 registered specimens were found in this layout snapshot image."
+                        ) : (
+                          `Verification complete: Out of your ${totalRegisteredCount} registered physical specimens, ${matchedDiceCount} matching dice were verified inside the puzzle picture.`
+                        )}
+                      </p>
                     </div>
                   </div>
 
-                  {/* Poetic commentary under-panel bar */}
-                  <div className="bg-zinc-900 rounded-2xl p-5 text-white shadow-md space-y-3">
-                    <div className="flex items-center gap-2">
-                      <span className="p-1.5 bg-white/10 rounded text-zinc-300">
-                        <Sparkles className="w-4 h-4 animate-pulse" />
-                      </span>
-                      <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-300">
-                        Aesthetic Commentary
+                  {/* Presence table/matching details list */}
+                  <div className="bg-white border-2 border-zinc-200/90 rounded-3xl p-6 shadow-xs space-y-4">
+                    <h4 className="text-xs font-bold text-zinc-800 uppercase tracking-widest font-mono border-b border-zinc-150 pb-3 block">
+                      Individual Verification Checklist
+                    </h4>
+
+                    {totalRegisteredCount === 0 ? (
+                      <p className="text-xs text-zinc-500 italic p-4 text-center">
+                        No custom specimen rack definitions to trace. Populate items in the top rack.
+                      </p>
+                    ) : (
+                      <div className="divide-y divide-zinc-150/80">
+                        {(Object.values(rack) as CustomDie[]).map((die) => {
+                          const matchItem = comparisonMatches.find(m => m.dieId === die.id);
+                          return (
+                            <div key={`check-${die.id}`} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
+                              {/* Die information thumbnail */}
+                              <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-xl overflow-hidden border border-zinc-200 shrink-0 shadow-xs">
+                                  <img src={die.imageUrl} alt="" className="w-full h-full object-cover" />
+                                </div>
+                                <div>
+                                  <span className="font-mono font-black text-zinc-900 block text-xs">
+                                    Slot Specimen #{die.id}
+                                  </span>
+                                  <span className="text-[10px] font-mono font-bold text-zinc-400 mt-1 block">
+                                    Uploaded: {die.uploadedAt}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Match state outcome */}
+                              {matchItem ? (
+                                matchItem.exists ? (
+                                  <div className="text-left sm:text-right flex flex-col items-start sm:items-end max-w-sm">
+                                    <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg flex items-center gap-1 leading-none uppercase shrink-0">
+                                      <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                      ✓ FOUND IN PUZZLE
+                                    </span>
+                                    <p className="text-[11px] text-zinc-600 mt-1.5 leading-relaxed">
+                                      {matchItem.reason}
+                                    </p>
+                                    <span className="text-[8px] font-mono font-black text-zinc-400 mt-1 block">
+                                      Confidence: {Math.round(matchItem.confidence * 100)}%
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="text-left sm:text-right flex flex-col items-start sm:items-end max-w-sm">
+                                    <span className="text-[10px] font-black text-red-650 bg-red-50 border border-red-200 px-2.5 py-1 rounded-lg flex items-center gap-1 leading-none uppercase shrink-0">
+                                      ✕ MISSING
+                                    </span>
+                                    <p className="text-[11px] text-zinc-500 mt-1.5 leading-relaxed">
+                                      {matchItem.reason || "Unable to locate match in target layout."}
+                                    </p>
+                                    <span className="text-[8px] font-mono font-black text-zinc-400 mt-1 block">
+                                      Confidence: {Math.round(matchItem.confidence * 100)}%
+                                    </span>
+                                  </div>
+                                )
+                              ) : (
+                                <div className="text-left sm:text-right flex flex-col items-start sm:items-end">
+                                  <span className="text-[10px] font-black text-zinc-400 bg-zinc-50 border border-zinc-200 px-2.5 py-1 rounded-lg uppercase leading-none">
+                                    Pending Match
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Poetic feedback */}
+                  {analysisText && (
+                    <div className="bg-zinc-900 text-white rounded-3xl p-6 shadow-md space-y-2 border">
+                      <h4 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest font-mono flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-amber-400" />
+                        Exhibit Layout Analysis Narrative
                       </h4>
+                      <p className="text-xs text-zinc-200 leading-relaxed font-sans">
+                        {analysisText}
+                      </p>
                     </div>
-                    <p className="text-xs text-zinc-200 leading-relaxed font-sans">
-                      {result.moodDescription}
+                  )}
+                </motion.div>
+              )}
+
+              {/* Inactive result placeholders */}
+              {!isAnalyzing && comparisonMatches === null && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="bg-white rounded-3xl border-2 border-zinc-200/90 p-8 text-center flex flex-col items-center justify-center min-h-[350px] space-y-4"
+                >
+                  <div className="w-12 h-12 rounded-2xl border-2 border-dotted border-zinc-350 flex items-center justify-center text-zinc-400 bg-zinc-50 shadow-xs">
+                    <Maximize2 className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-1 max-w-sm">
+                    <h3 className="text-xs font-bold text-zinc-900 font-mono tracking-widest uppercase">
+                      Analysis View Awaiting
+                    </h3>
+                    <p className="text-xs text-zinc-500 leading-relaxed">
+                      Upload your puzzle image layout on the left, then trigger the processing sequence to find matched physical specimen positions.
                     </p>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
-
-            {/* Session History bar */}
-            {history.length > 0 && !loading && (
-              <div className="bg-white rounded-2xl border-2 border-zinc-200 p-5 shadow-xs space-y-3 mt-6">
-                <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-1.5">
-                  <History className="w-3.5 h-3.5" />
-                  Recent extractions
-                </h4>
-
-                <div className="flex gap-2.5 overflow-x-auto pb-1.5">
-                  {history.map((hist, hIdx) => {
-                    return (
-                      <button
-                        key={`hist-${hIdx}`}
-                        onClick={() => {
-                          setResult(hist.result);
-                          setImageSrc(hist.thumbnail);
-                        }}
-                        className="flex items-center gap-2 bg-zinc-50 hover:bg-zinc-100 p-2 rounded border border-zinc-200 text-left cursor-pointer shrink-0 transition-colors"
-                      >
-                        <img
-                          src={hist.thumbnail}
-                          alt="Thumbnail"
-                          className="w-10 h-10 rounded object-cover border border-zinc-300/50"
-                        />
-                        <div className="flex flex-col">
-                          <span className="text-[10px] font-bold text-zinc-800 uppercase tracking-wider line-clamp-1 max-w-[120px]">
-                            {hist.result.dominantColors[0]?.name || "Extract"}
-                          </span>
-                          <span className="text-[9px] font-mono text-zinc-500 font-bold">
-                            {hist.result.dominantColors[0]?.hex}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </section>
+
         </div>
       </main>
 
-      {/* Decorative footer */}
-      <footer className="border-t border-zinc-200 bg-zinc-100 py-6 mt-16 text-xs text-zinc-500">
-        <div className="max-w-7xl mx-auto px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="font-semibold uppercase tracking-wider text-[10px]">
-            STATUS: ALL SYSTEMS OPERATIONAL • API_v1
+      {/* FOOTER */}
+      <footer className="border-t border-zinc-200/80 bg-zinc-100 py-6 text-zinc-500 text-xs mt-16 font-mono font-bold uppercase tracking-wider">
+        <div className="max-w-7xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center">
+          <p className="text-[10px]">
+            CONOPS_STATUS: COMPLIANT • TWO_GROUP_MODE
           </p>
-          <p className="text-[10px] font-bold uppercase tracking-wider bg-white px-2.5 py-1 rounded border border-zinc-200 text-zinc-800">
-            POWERED BY models/gemini-3.5-flash
+          <p className="text-[10px] bg-white text-zinc-800 px-3 py-1 rounded border shadow-xs leading-none">
+            INTELLIGENCE: gemini-3.5-flash
           </p>
         </div>
       </footer>
+
+      {/* DIALOG: SPECIMEN QUICK DEFINITION MODAL */}
+      <AnimatePresence>
+        {activeSlotId !== null && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop overlay */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setActiveSlotId(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-xs"
+            />
+
+            {/* Modal Body card */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white rounded-3xl p-6 max-w-md w-full border-2 border-zinc-950 relative shadow-2xl space-y-6 z-10 text-left"
+            >
+              <div className="flex items-center justify-between border-b pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-10 h-10 rounded-xl relative overflow-hidden flex items-center justify-center border border-zinc-200 bg-zinc-100 shadow-inner shrink-0">
+                    {rack[activeSlotId] ? (
+                      <>
+                        <img 
+                          src={rack[activeSlotId].imageUrl} 
+                          alt="" 
+                          className="absolute inset-0 w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-0 bg-black/45" />
+                        <span className="relative z-10 text-white font-mono font-black text-xs">
+                          {activeSlotId}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-zinc-700 font-mono font-black text-xs">
+                        {activeSlotId}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-sm font-bold text-zinc-900 font-display">
+                    Define Dice Slot Specimen
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setActiveSlotId(null)}
+                  className="text-zinc-400 hover:text-zinc-600 text-sm font-black p-1 bg-zinc-100 hover:bg-zinc-200 rounded-lg cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Choose methods */}
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block font-mono">
+                    Upload physical die close-up
+                  </span>
+                  
+                  <label className="border-2 border-dashed border-zinc-300 hover:border-zinc-900 rounded-2xl p-6 text-center cursor-pointer hover:bg-zinc-50/55 flex flex-col items-center justify-center gap-2 transition duration-150 relative overflow-hidden min-h-[150px]">
+                    {rack[activeSlotId] ? (
+                      <>
+                        <img 
+                          src={rack[activeSlotId].imageUrl} 
+                          alt="Current Specimen" 
+                          className="absolute inset-0 w-full h-full object-cover opacity-25"
+                        />
+                        <div className="absolute inset-0 bg-white/70 hover:bg-white/55 transition-colors" />
+                      </>
+                    ) : null}
+                    <div className="relative z-10 flex flex-col items-center justify-center gap-2">
+                      <Upload className="w-5 h-5 text-zinc-650" />
+                      <span className="text-xs font-bold text-zinc-900 block underline">
+                        {rack[activeSlotId] ? "Replace specimen photo" : "Click to choose image file"}
+                      </span>
+                      <span className="text-[9px] text-zinc-400 font-bold block leading-none">JPEG, PNG, WEBP</span>
+                    </div>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            if (typeof reader.result === "string") {
+                              handleDiePhotoUpload(activeSlotId, reader.result);
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="bg-zinc-50 p-3 rounded-2xl flex gap-2 text-zinc-500 font-mono text-[9px] leading-relaxed border select-none">
+                <HelpCircle className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
+                <p>
+                  Images are securely stored inside your client's web storage (localStorage) to persist setup parameters.
+                </p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

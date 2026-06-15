@@ -1,6 +1,6 @@
 {
-  "name": "Color Palette Detector",
-  "description": "Upload any image to find its dominant color palette with highly accurate HEX and RGB color codes. Explore generated matching color schemes (complementary, analogous, triadic, monochromatic) and expert design feedback.",
+  "name": "Choose Your Blue and Green Exhibit",
+  "description": "An interactive coordinate-matching puzzle exhibit dashboard. Place 15 distinct dice between Blue and Green trays, validate placement symmetry against saved index configurations, and analyze physical layout anomalies using multimodal Gemini vision.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
