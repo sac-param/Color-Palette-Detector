@@ -16,6 +16,7 @@ import {
   Maximize2
 } from "lucide-react";
 import { DetectedBlock } from "./types";
+import { CONSTANT_DICE_SPECS } from "./data/diceData";
 
 interface CustomDie {
   id: number;
@@ -401,41 +402,73 @@ export default function App() {
                   </span>
                 </div>
 
-                <div className="relative w-full overflow-hidden rounded-2xl border-2 border-zinc-200/90 shadow bg-stone-50 select-none">
-                  <img
-                    src={puzzleImage}
-                    alt="Verified puzzle map layout"
-                    className="w-full h-auto block object-contain"
-                    referrerPolicy="no-referrer"
-                  />
+                <div className="relative w-full overflow-visible select-none">
+                  <div className="rounded-2xl overflow-hidden border-2 border-zinc-200/90 shadow bg-stone-50">
+                    <img
+                      src={puzzleImage}
+                      alt="Verified puzzle map layout"
+                      className="w-full h-auto block object-contain"
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
                   
                   {/* Bounding box item overlay list */}
-                  {comparisonMatches.map((match: any) => {
+                  {comparisonMatches.map((match: any, idx: number) => {
                     if (!match.exists || !match.box2d || !Array.isArray(match.box2d) || match.box2d.length < 4) return null;
                     if (match.box2d.every((val: number) => val === 0)) return null;
 
                     // extract percent coordinates: [ymin, xmin, ymax, xmax]
-                    const [ymin, xmin, ymax, xmax] = match.box2d;
+                    let [ymin, xmin, ymax, xmax] = match.box2d;
+
+                    // Support multiple dynamic coordinate scales from model predictions:
+                    // 1. Scales of 0-1000 (typical Gemini visual grounding scale): divide by 10 to get %
+                    // 2. Scales of 0-1 (normalized floating scale): multiply by 100 to get %
+                    // 3. Scales of 0-100 (direct percentages): keep as is
+                    const maxCoordValue = Math.max(ymin, xmin, ymax, xmax);
+                    if (maxCoordValue > 100) {
+                      ymin = ymin / 10;
+                      xmin = xmin / 10;
+                      ymax = ymax / 10;
+                      xmax = xmax / 10;
+                    } else if (maxCoordValue <= 1.0) {
+                      ymin = ymin * 100;
+                      xmin = xmin * 100;
+                      ymax = ymax * 100;
+                      xmax = xmax * 100;
+                    }
+
                     const top = ymin;
                     const left = xmin;
-                    const width = xmax - xmin;
-                    const height = ymax - ymin;
+                    const width = Math.max(2, xmax - xmin);
+                    const height = Math.max(2, ymax - ymin);
+
+                    const spec = CONSTANT_DICE_SPECS.find((s) => s.id === match.dieId);
+                    const particularColor = spec ? spec.defaultHex : "#10B981";
 
                     return (
                       <div
-                        key={`overlay-die-${match.dieId}`}
+                        key={`overlay-die-${match.dieId ?? 'missing'}-${idx}`}
                         style={{
                           position: "absolute",
                           top: `${top}%`,
                           left: `${left}%`,
                           width: `${width}%`,
                           height: `${height}%`,
+                          borderColor: particularColor,
+                          boxShadow: `0 0 12px 2px ${particularColor}bf, inset 0 0 8px ${particularColor}50`,
+                          zIndex: 10,
                         }}
-                        className="group border-2 border-emerald-500 hover:border-cyan-500 bg-emerald-500/15 hover:bg-cyan-500/20 transition-all duration-150 rounded"
+                        className="group border-[2.5px] bg-white/5 hover:bg-white/10 transition-all duration-150 rounded-xl cursor-default"
                         title={`Slot Specimen #${match.dieId}: Confidence ${match.confidence}%`}
                       >
-                        <div className="absolute top-1 left-1 bg-black text-white font-mono font-black text-[9px] px-1.5 py-0.5 rounded shadow-lg border border-emerald-400 select-none leading-none z-10 whitespace-nowrap opacity-90 group-hover:opacity-100 group-hover:border-cyan-400 transition-all">
-                          Specimen #{match.dieId}
+                        <div 
+                          style={{
+                            backgroundColor: particularColor,
+                          }}
+                          className="absolute -top-3.5 -left-1 text-white font-mono font-black text-[10px] px-2.5 py-1 rounded-full shadow-lg border-2 border-white select-none leading-none z-20 whitespace-nowrap opacity-95 group-hover:opacity-100 transition-all flex items-center gap-1.5"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-white opacity-90 animate-pulse" />
+                          <span>Specimen #{match.dieId}</span>
                         </div>
                       </div>
                     );
@@ -549,19 +582,29 @@ export default function App() {
                       </p>
                     ) : (
                       <div className="divide-y divide-zinc-150/80">
-                        {(Object.values(rack) as CustomDie[]).map((die) => {
+                        {(Object.values(rack) as CustomDie[]).map((die, idx) => {
                           const matchItem = comparisonMatches.find(m => m.dieId === die.id);
+                          const spec = CONSTANT_DICE_SPECS.find((s) => s.id === die.id);
+                          const particularColor = spec ? spec.defaultHex : "#10B981";
+
                           return (
-                            <div key={`check-${die.id}`} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
+                            <div key={`check-${die.id ?? 'missing'}-${idx}`} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
                               {/* Die information thumbnail */}
                               <div className="flex items-center gap-3">
                                 <div className="w-12 h-12 rounded-xl overflow-hidden border border-zinc-200 shrink-0 shadow-xs">
                                   <img src={die.imageUrl} alt="" className="w-full h-full object-cover" />
                                 </div>
                                 <div>
-                                  <span className="font-mono font-black text-zinc-900 block text-xs">
-                                    Slot Specimen #{die.id}
-                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono font-black text-zinc-900 block text-xs">
+                                      Slot Specimen #{die.id}
+                                    </span>
+                                    <span 
+                                      className="w-2.5 h-2.5 rounded-full inline-block border border-zinc-200"
+                                      style={{ backgroundColor: particularColor }}
+                                      title={`Registered color: ${particularColor}`}
+                                    />
+                                  </div>
                                   <span className="text-[10px] font-mono font-bold text-zinc-400 mt-1 block">
                                     Uploaded: {die.uploadedAt}
                                   </span>

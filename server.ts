@@ -146,16 +146,58 @@ app.post("/api/detect-colors", async (req, res) => {
 7. Return the final structured output conforming strictly to the requested schema.`
     });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: { parts },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: diceComparisonSchema,
-      },
-    });
+    let response;
+    const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite"];
+    let lastError: any = null;
+    let success = false;
 
-    const responseText = response.text;
+    for (let i = 0; i < modelsToTry.length; i++) {
+      const modelName = modelsToTry[i];
+      const attempt = i + 1;
+      console.log(`[Gemini API] Attempt ${attempt}: calling model '${modelName}'...`);
+
+      try {
+        response = await ai.models.generateContent({
+          model: modelName,
+          contents: { parts },
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: diceComparisonSchema,
+          },
+        });
+
+        if (response?.text) {
+          success = true;
+          console.log(`[Gemini API] Success on attempt ${attempt} with model '${modelName}'`);
+          break; // Exit loop on success
+        }
+        throw new Error(`Empty response text received from model '${modelName}'`);
+      } catch (err: any) {
+        lastError = err;
+        const errStr = `${err.message || ""} ${err.status || ""} ${err.statusCode || ""} ${String(err)} ${err.stack || ""}`;
+        console.warn(`[Gemini API] Attempt ${attempt} failed with model '${modelName}':`, errStr);
+
+        // Treat 400 structures or Bad Requests as permanent client-side or configuration issues
+        const is400 = errStr.includes("400") || errStr.toLowerCase().includes("bad request") || errStr.toLowerCase().includes("invalid_argument");
+        if (is400) {
+          console.error(`[Gemini API] Permanent 400 error caught. Aborting fallback sequence.`);
+          throw err;
+        }
+
+        // Wait with exponential backoff on transient errors (503, 429, etc.) before next attempt
+        if (i < modelsToTry.length - 1) {
+          const backoffMs = Math.min(1000 * Math.pow(2, i), 4000);
+          console.log(`[Gemini API] Backing off for ${backoffMs}ms before next fallback attempt...`);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        }
+      }
+    }
+
+    if (!success) {
+      throw lastError || new Error("All model fallback attempts failed.");
+    }
+
+    const responseText = response?.text;
     if (!responseText) {
       throw new Error("Empty response received from pattern matching model.");
     }
