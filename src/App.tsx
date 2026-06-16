@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { DetectedBlock } from "./types";
 import { CONSTANT_DICE_SPECS } from "./data/diceData";
+import { compressImage } from "./utils/imageCompressor";
 
 interface CustomDie {
   id: number;
@@ -57,20 +58,39 @@ export default function App() {
 
   // Save rack whenever it changes
   useEffect(() => {
-    localStorage.setItem("rack_dice_custom", JSON.stringify(rack));
+    try {
+      localStorage.setItem("rack_dice_custom", JSON.stringify(rack));
+    } catch (e) {
+      console.warn("Storage quota exceeded or error occurred while saving rack layout:", e);
+    }
   }, [rack]);
 
   // Handle customizable single die photo uploads
   const handleDiePhotoUpload = async (dieId: number, base64: string) => {
-    setRack((prev) => ({
-      ...prev,
-      [dieId]: {
-        id: dieId,
-        imageUrl: base64,
-        name: `Specimen #${dieId}`,
-        uploadedAt: new Date().toLocaleTimeString(),
-      },
-    }));
+    try {
+      const compressed = await compressImage(base64, 200, 200, 0.75);
+      setRack((prev) => ({
+        ...prev,
+        [dieId]: {
+          id: dieId,
+          imageUrl: compressed,
+          name: `Specimen #${dieId}`,
+          uploadedAt: new Date().toLocaleTimeString(),
+        },
+      }));
+    } catch (err) {
+      console.error("Failed compressing upload:", err);
+      // Fallback
+      setRack((prev) => ({
+        ...prev,
+        [dieId]: {
+          id: dieId,
+          imageUrl: base64,
+          name: `Specimen #${dieId}`,
+          uploadedAt: new Date().toLocaleTimeString(),
+        },
+      }));
+    }
     setActiveSlotId(null);
   };
 
@@ -148,8 +168,21 @@ export default function App() {
       }
 
       const parsed = await resp.json();
-      if (parsed.matches) {
-        setComparisonMatches(parsed.matches);
+      if (parsed.matches && Array.isArray(parsed.matches)) {
+        // Enforce deduplication: keep only one match per dieId (prioritize highest confidence active matches)
+        const uniqueMatchesMap = new Map<number, any>();
+        parsed.matches.forEach((match: any) => {
+          if (!match) return;
+          const dieIdNum = parseInt(String(match.dieId), 10);
+          if (isNaN(dieIdNum)) return;
+          const existing = uniqueMatchesMap.get(dieIdNum);
+          if (!existing) {
+            uniqueMatchesMap.set(dieIdNum, { ...match, dieId: dieIdNum });
+          } else if (match.exists && (!existing.exists || (match.confidence || 0) > (existing.confidence || 0))) {
+            uniqueMatchesMap.set(dieIdNum, { ...match, dieId: dieIdNum });
+          }
+        });
+        setComparisonMatches(Array.from(uniqueMatchesMap.values()));
       } else {
         setComparisonMatches([]);
       }
@@ -413,66 +446,78 @@ export default function App() {
                   </div>
                   
                   {/* Bounding box item overlay list */}
-                  {comparisonMatches.map((match: any, idx: number) => {
-                    if (!match.exists || !match.box2d || !Array.isArray(match.box2d) || match.box2d.length < 4) return null;
-                    if (match.box2d.every((val: number) => val === 0)) return null;
+                  {(() => {
+                    const seenDieIds = new Set<number>();
+                    return comparisonMatches
+                      .filter((match: any) => {
+                        if (!match || !match.exists) return false;
+                        const dId = parseInt(String(match.dieId), 10);
+                        if (isNaN(dId)) return false;
+                        if (seenDieIds.has(dId)) return false;
+                        seenDieIds.add(dId);
+                        return true;
+                      })
+                      .map((match: any, idx: number) => {
+                        if (!match.box2d || !Array.isArray(match.box2d) || match.box2d.length < 4) return null;
+                        if (match.box2d.every((val: number) => val === 0)) return null;
 
-                    // extract percent coordinates: [ymin, xmin, ymax, xmax]
-                    let [ymin, xmin, ymax, xmax] = match.box2d;
+                        // extract percent coordinates: [ymin, xmin, ymax, xmax]
+                        let [ymin, xmin, ymax, xmax] = match.box2d;
 
-                    // Support multiple dynamic coordinate scales from model predictions:
-                    // 1. Scales of 0-1000 (typical Gemini visual grounding scale): divide by 10 to get %
-                    // 2. Scales of 0-1 (normalized floating scale): multiply by 100 to get %
-                    // 3. Scales of 0-100 (direct percentages): keep as is
-                    const maxCoordValue = Math.max(ymin, xmin, ymax, xmax);
-                    if (maxCoordValue > 100) {
-                      ymin = ymin / 10;
-                      xmin = xmin / 10;
-                      ymax = ymax / 10;
-                      xmax = xmax / 10;
-                    } else if (maxCoordValue <= 1.0) {
-                      ymin = ymin * 100;
-                      xmin = xmin * 100;
-                      ymax = ymax * 100;
-                      xmax = xmax * 100;
-                    }
+                        // Support multiple dynamic coordinate scales from model predictions:
+                        // 1. Scales of 0-1000 (typical Gemini visual grounding scale): divide by 10 to get %
+                        // 2. Scales of 0-1 (normalized floating scale): multiply by 100 to get %
+                        // 3. Scales of 0-100 (direct percentages): keep as is
+                        const maxCoordValue = Math.max(ymin, xmin, ymax, xmax);
+                        if (maxCoordValue > 100) {
+                          ymin = ymin / 10;
+                          xmin = xmin / 10;
+                          ymax = ymax / 10;
+                          xmax = xmax / 10;
+                        } else if (maxCoordValue <= 1.0) {
+                          ymin = ymin * 100;
+                          xmin = xmin * 100;
+                          ymax = ymax * 100;
+                          xmax = xmax * 100;
+                        }
 
-                    const top = ymin;
-                    const left = xmin;
-                    const width = Math.max(2, xmax - xmin);
-                    const height = Math.max(2, ymax - ymin);
+                        const top = ymin;
+                        const left = xmin;
+                        const width = Math.max(2, xmax - xmin);
+                        const height = Math.max(2, ymax - ymin);
 
-                    const spec = CONSTANT_DICE_SPECS.find((s) => s.id === match.dieId);
-                    const particularColor = spec ? spec.defaultHex : "#10B981";
+                        const spec = CONSTANT_DICE_SPECS.find((s) => s.id === match.dieId);
+                        const particularColor = spec ? spec.defaultHex : "#10B981";
 
-                    return (
-                      <div
-                        key={`overlay-die-${match.dieId ?? 'missing'}-${idx}`}
-                        style={{
-                          position: "absolute",
-                          top: `${top}%`,
-                          left: `${left}%`,
-                          width: `${width}%`,
-                          height: `${height}%`,
-                          borderColor: particularColor,
-                          boxShadow: `0 0 12px 2px ${particularColor}bf, inset 0 0 8px ${particularColor}50`,
-                          zIndex: 10,
-                        }}
-                        className="group border-[2.5px] bg-white/5 hover:bg-white/10 transition-all duration-150 rounded-xl cursor-default"
-                        title={`Slot Specimen #${match.dieId}: Confidence ${match.confidence}%`}
-                      >
-                        <div 
-                          style={{
-                            backgroundColor: particularColor,
-                          }}
-                          className="absolute -top-3.5 -left-1 text-white font-mono font-black text-[10px] px-2.5 py-1 rounded-full shadow-lg border-2 border-white select-none leading-none z-20 whitespace-nowrap opacity-95 group-hover:opacity-100 transition-all flex items-center gap-1.5"
-                        >
-                          <div className="w-1.5 h-1.5 rounded-full bg-white opacity-90 animate-pulse" />
-                          <span>Specimen #{match.dieId}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
+                        return (
+                          <div
+                            key={`overlay-die-${match.dieId ?? 'missing'}-${idx}`}
+                            style={{
+                              position: "absolute",
+                              top: `${top}%`,
+                              left: `${left}%`,
+                              width: `${width}%`,
+                              height: `${height}%`,
+                              borderColor: particularColor,
+                              boxShadow: `0 0 12px 2px ${particularColor}bf, inset 0 0 8px ${particularColor}50`,
+                              zIndex: 10,
+                            }}
+                            className="group border-[2.5px] bg-white/5 hover:bg-white/10 transition-all duration-150 rounded-xl cursor-default"
+                            title={`Slot Specimen #${match.dieId}: Confidence ${match.confidence}%`}
+                          >
+                            <div 
+                              style={{
+                                backgroundColor: particularColor,
+                              }}
+                              className="absolute top-1 left-1 text-white font-mono font-black text-[10px] px-2 py-0.5 rounded-lg shadow-lg border-2 border-white select-none leading-none z-20 whitespace-nowrap opacity-95 group-hover:opacity-100 transition-all flex items-center gap-1"
+                            >
+                              <div className="w-1.5 h-1.5 rounded-full bg-white opacity-90 animate-pulse" />
+                              <span>Specimen #{match.dieId}</span>
+                            </div>
+                          </div>
+                        );
+                      });
+                  })()}
                 </div>
                 <p className="text-[10px] text-zinc-400 font-mono text-center leading-relaxed">
                   * Bounding boxes approximate the coordinates detected by Gemini pattern search matching.
@@ -623,7 +668,7 @@ export default function App() {
                                       {matchItem.reason}
                                     </p>
                                     <span className="text-[8px] font-mono font-black text-zinc-400 mt-1 block">
-                                      Confidence: {Math.round(matchItem.confidence * 100)}%
+                                      Confidence: {matchItem.confidence <= 1 ? Math.round(matchItem.confidence * 100) : Math.round(matchItem.confidence)}%
                                     </span>
                                   </div>
                                 ) : (
@@ -635,7 +680,7 @@ export default function App() {
                                       {matchItem.reason || "Unable to locate match in target layout."}
                                     </p>
                                     <span className="text-[8px] font-mono font-black text-zinc-400 mt-1 block">
-                                      Confidence: {Math.round(matchItem.confidence * 100)}%
+                                      Confidence: {matchItem.confidence <= 1 ? Math.round(matchItem.confidence * 100) : Math.round(matchItem.confidence)}%
                                     </span>
                                   </div>
                                 )

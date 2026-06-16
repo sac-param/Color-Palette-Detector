@@ -23,6 +23,7 @@ import {
   Image as ImageIcon
 } from "lucide-react";
 import { DetectedBlock } from "../types";
+import { compressImage } from "../utils/imageCompressor";
 import { 
   CONSTANT_DICE_SPECS, 
   DEFAULT_SAVED_PATTERNS, 
@@ -961,18 +962,22 @@ export const PuzzleBlockScanner: React.FC<PuzzleBlockScannerProps> = ({ blocks =
                               const reader = new FileReader();
                               reader.onload = async () => {
                                 if (typeof reader.result === "string") {
-                                  // extract average color
-                                  const base64 = reader.result;
-                                  const extracted = await extractAverageColor(base64);
-                                  const updated = {
-                                    ...customDice,
-                                    [selectedDiceId]: {
-                                      imageUrl: base64,
-                                      avgColor: extracted
-                                    }
-                                  };
-                                  setCustomDice(updated);
-                                  localStorage.setItem("custom_dice_photos", JSON.stringify(updated));
+                                  try {
+                                    const base64 = reader.result;
+                                    const compressed = await compressImage(base64, 200, 200, 0.75);
+                                    const extracted = await extractAverageColor(compressed);
+                                    const updated = {
+                                      ...customDice,
+                                      [selectedDiceId]: {
+                                        imageUrl: compressed,
+                                        avgColor: extracted
+                                      }
+                                    };
+                                    setCustomDice(updated);
+                                    localStorage.setItem("custom_dice_photos", JSON.stringify(updated));
+                                  } catch (err) {
+                                    console.error("Failed custom dice scan compress:", err);
+                                  }
                                 }
                               };
                               reader.readAsDataURL(file);
